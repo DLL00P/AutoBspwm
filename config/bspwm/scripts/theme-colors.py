@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""
+theme-colors.py - turn the pywal palette of the current wallpaper into
+colours for polybar, rofi, kitty and bspwm.
+
+pywal gives us 16 terminal colours, but they are not directly usable as
+bar backgrounds: they are often pastel (white text becomes unreadable) and
+their order is arbitrary. This script:
+
+  1. picks the most vivid colour of the wallpaper as the PRIMARY accent,
+  2. picks a second vivid colour with a clearly different hue as SECONDARY
+     (falls back to the primary on near-monochrome wallpapers),
+  3. builds the 8 bar "shades" as a gradient between both, forcing each one
+     to a fixed luminance so white text always keeps >= 4.5:1 contrast,
+  4. writes the files and applies the bspwm colours.
+
+Usage: theme-colors.py [path/to/colors.json]
+"""
+
+import colorsys
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+WAL_JSON = os.path.join(HOME, ".cache/wal/colors.json")
+WAL_KITTY = os.path.join(HOME, ".cache/wal/colors-kitty.conf")
+
+POLYBAR_COLORS = os.path.join(HOME, ".config/polybar/shapes/colors.ini")
+ROFI_COLORS = os.path.join(HOME, ".config/polybar/shapes/scripts/rofi/colors.rasi")
+KITTY_COLORS = os.path.join(HOME, ".config/kitty/color.ini")
+STATE_DIR = os.path.join(HOME, ".cache/wallpaper")
+P10K_COLORS = os.path.join(STATE_DIR, "p10k-colors.zsh")
+
+# Target relative luminance for each shade (dark -> light).
+# shade1-4 carry white text in the bar, so they stay <= 0.18 (contrast >= 4.5:1).
+SHADE_LUMA = [0.040, 0.062, 0.090, 0.125, 0.165, 0.220, 0.290, 0.380]
+BAR_BG_LUMA = 0.012
+ACCENT_LUMA = 0.40       # active workspace icon, presel feedback
+MAX_SAT = 0.78           # avoid neon/eye-burning shades
+
+
+# ---------------------------------------------------------------- colour math
+def hex_to_rgb(h):
+    h = h.lstrip("#")[-6:]
+    return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+
+def rgb_to_hex(rgb):
+    return "#" + "".join(f"{round(max(0, min(1, c)) * 255):02X}" for c in rgb)
+
+
+def _lin(c):
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def luminance(rgb):
+    r, g, b = (_lin(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a, b):
+    la, lb = sorted((luminance(a), luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def with_luminance(rgb, target, max_sat=MAX_SAT):
+    """Keep hue (and roughly saturation), solve HLS lightness for a luminance."""
+    h, _, s = colorsys.rgb_to_hls(*rgb)
+    s = min(s, max_sat)
+    lo, hi = 0.0, 1.0
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        if luminance(colorsys.hls_to_rgb(h, mid, s)) < target:
+            lo = mid
+        else:
+            hi = mid
+    return colorsys.hls_to_rgb(h, (lo + hi) / 2, s)
+
+
+def mix(a, b, t):
+    return tuple(x + (y - x) * t for x, y in zip(a, b))
+
+
+def hue_dist(a, b):
+    d = abs(a - b) % 1.0
+    return min(d, 1 - d)
+
+
+# ---------------------------------------------------------------- palette
+def vividness(rgb):
+    h, l, s = colorsys.rgb_to_hls(*rgb)
+    # favour saturated colours that are neither almost black nor almost white
+    return s * (1 - abs(l - 0.5) * 1.4)
+
+
+def pick_accents(colors):
+    cands = [hex_to_rgb(colors[f"color{i}"]) for i in range(1, 7)]
+    cands += [hex_to_rgb(colors[f"color{i}"]) for i in range(9, 15)]
+    ranked = sorted(cands, key=vividness, reverse=True)
+    primary = ranked[0]
+    ph = colorsys.rgb_to_hls(*primary)[0]
+
+    secondary = None
+    for c in ranked[1:]:
+        h, _, s = colorsys.rgb_to_hls(*c)
+        if s > 0.18 and hue_dist(h, ph) > 0.10:
+            secondary = c
+            break
+    if secondary is None:
+        secondary = primary
+    return primary, secondary
+
+
+def build_theme(colors):
+    primary, secondary = pick_accents(colors)
+    shades = [
+        with_luminance(mix(primary, secondary, i / 7), SHADE_LUMA[i])
+        for i in range(8)
+    ]
+
+    bar_bg = with_luminance(primary, BAR_BG_LUMA, max_sat=0.35)
+
+    # Foreground: wal's light colour nudged towards white; must read on shade4.
+    fg = hex_to_rgb(colors["color15"])
+    t = 0.0
+    while contrast(fg, shades[3]) < 4.5 and t < 1:
+        t += 0.1
+        fg = mix(hex_to_rgb(colors["color15"]), (1, 1, 1), t)
+    dim = mix(fg, bar_bg, 0.55)
+
+    accent = with_luminance(secondary, ACCENT_LUMA, max_sat=0.9)
+    if contrast(accent, bar_bg) < 3:
+        accent = with_luminance(primary, ACCENT_LUMA, max_sat=0.9)
+    urgent = with_luminance((0.9, 0.25, 0.3), 0.25, max_sat=0.85)
+
+    return {
+        "background": bar_bg,
+        "foreground": fg,
+        "dim": dim,
+        "accent": accent,
+        "urgent": urgent,
+        "shades": shades,
+        "primary": primary,
+        "secondary": secondary,
+    }
+
+
+# ---------------------------------------------------------------- writers
+def write_polybar(t):
+    h = rgb_to_hex
+    lines = [
+        ";; Generated by ~/.config/bspwm/scripts/theme-colors.py",
+        ";; from the current wallpaper. Edits here are overwritten on change.",
+        "",
+        "[color]",
+        "",
+        f"background = {h(t['background'])}",
+        f"foreground = {h(t['foreground'])}",
+        f"foreground-alt = {h(t['foreground'])}",
+        f"dim = {h(t['dim'])}",
+        f"accent = {h(t['accent'])}",
+        f"on-accent = {h(t['background'])}",
+        f"urgent = {h(t['urgent'])}",
+        "",
+    ]
+    lines += [f"shade{i + 1} = {h(c)}" for i, c in enumerate(t["shades"])]
+    _atomic_write(POLYBAR_COLORS, "\n".join(lines) + "\n")
+
+
+def write_rofi(t):
+    h = rgb_to_hex
+    sh = t["shades"]
+    content = f"""/* Generated by theme-colors.py from the current wallpaper */
+
+* {{
+  al:    #00000000;
+  bg:    {h(t['background'])}FF;
+  bg1:   {h(sh[1])}FF;
+  bg2:   {h(sh[2])}FF;
+  bg3:   {h(sh[3])}FF;
+  fg:    {h(t['foreground'])}FF;
+  ac:    {h(t['accent'])}FF;
+}}
+"""
+    _atomic_write(ROFI_COLORS, content)
+
+
+def write_kitty():
+    if os.path.isfile(WAL_KITTY):
+        os.makedirs(os.path.dirname(KITTY_COLORS), exist_ok=True)
+        shutil.copyfile(WAL_KITTY, KITTY_COLORS)
+
+
+def apply_bspwm(t):
+    if not shutil.which("bspc"):
+        return
+    h = rgb_to_hex
+    for key, val in (
+        ("normal_border_color", h(t["background"])),
+        ("active_border_color", h(t["shades"][3])),
+        ("focused_border_color", h(t["accent"])),
+        ("presel_feedback_color", h(t["accent"])),
+    ):
+        subprocess.run(["bspc", "config", key, val], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def write_p10k(t):
+    """Overrides for the segments used in ~/.p10k.zsh (sourced from .zshrc)."""
+    h = rgb_to_hex
+    sh = t["shades"]
+    fg, dark = h(t["foreground"]), h(t["background"])
+    values = {
+        # os icon: wallpaper accent with dark text
+        "OS_ICON_BACKGROUND": h(t["accent"]),
+        "OS_ICON_FOREGROUND": dark,
+        # directory
+        "DIR_BACKGROUND": h(sh[3]),
+        "DIR_FOREGROUND": fg,
+        "DIR_SHORTENED_FOREGROUND": h(mix(t["foreground"], sh[3], 0.25)),
+        "DIR_ANCHOR_FOREGROUND": fg,
+        # last command OK / duration (errors stay red on purpose)
+        "STATUS_OK_BACKGROUND": h(sh[1]),
+        "STATUS_OK_FOREGROUND": fg,
+        "STATUS_OK_PIPE_BACKGROUND": h(sh[1]),
+        "STATUS_OK_PIPE_FOREGROUND": fg,
+        "COMMAND_EXECUTION_TIME_BACKGROUND": h(sh[2]),
+        "COMMAND_EXECUTION_TIME_FOREGROUND": fg,
+        # user@host
+        "CONTEXT_BACKGROUND": h(sh[0]),
+        "CONTEXT_FOREGROUND": h(t["accent"]),
+    }
+    lines = ["# Generated by theme-colors.py from the current wallpaper"]
+    lines += [f"typeset -g POWERLEVEL9K_{k}='{v}'" for k, v in values.items()]
+    _atomic_write(P10K_COLORS, "\n".join(lines) + "\n")
+
+
+def write_state(t):
+    """Plain shell-sourceable file so other scripts can reuse the colours."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    h = rgb_to_hex
+    out = [f"{k}='{h(t[k])}'" for k in
+           ("background", "foreground", "dim", "accent", "urgent", "primary", "secondary")]
+    out += [f"shade{i + 1}='{h(c)}'" for i, c in enumerate(t["shades"])]
+    _atomic_write(os.path.join(STATE_DIR, "colors.sh"), "\n".join(out) + "\n")
+
+
+def _atomic_write(path, content):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(content)
+    os.replace(tmp, path)
+
+
+def main():
+    src = sys.argv[1] if len(sys.argv) > 1 else WAL_JSON
+    with open(src) as f:
+        colors = json.load(f)["colors"]
+    theme = build_theme(colors)
+    write_polybar(theme)
+    write_rofi(theme)
+    write_kitty()
+    write_p10k(theme)
+    write_state(theme)
+    apply_bspwm(theme)
+
+
+if __name__ == "__main__":
+    main()

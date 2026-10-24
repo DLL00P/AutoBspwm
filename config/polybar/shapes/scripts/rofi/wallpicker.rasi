@@ -1,0 +1,92 @@
+/*
+ * Wallpaper picker - used by ~/.config/bspwm/scripts/wallpaper.sh --pick
+ * Colours come from colors.rasi, which is regenerated from the wallpaper.
+ */
+
+configuration {
+    font:                   "Iosevka Nerd Font 10";
+    show-icons:             true;
+    disable-history:        true;
+    hover-select:           true;
+    me-select-entry:        "";
+    me-accept-entry:        "MousePrimary";
+}
+
+@import "colors.rasi"
+
+window {
+    transparency:           "real";
+    location:               center;
+    width:                  1100px;
+    border:                 0px;
+    border-radius:          14px;
+    background-color:       @bg;
+}
+
+mainbox {
+    padding:                18px;
+    spacing:                14px;
+    background-color:       transparent;
+    children:               [ inputbar, listview ];
+}
+
+inputbar {
+    padding:                10px 14px;
+    border-radius:          10px;
+    background-color:       @bg2;
+    text-color:             @fg;
+    children:               [ prompt, entry ];
+    spacing:                10px;
+}
+
+prompt, entry {
+    background-color:       transparent;
+    text-color:             inherit;
+}
+
+entry {
+    placeholder:            "search...";
+    placeholder-color:      @fg;
+}
+
+listview {
+    columns:                4;
+    lines:                  3;
+    spacing:                12px;
+    cycle:                  true;
+    dynamic:                true;
+    layout:                 vertical;
+    flow:                   horizontal;
+    fixed-columns:          true;
+    scrollbar:              false;
+    background-color:       transparent;
+}
+
+element {
+    orientation:            vertical;
+    padding:                8px;
+    spacing:                6px;
+    border-radius:          10px;
+    background-color:       transparent;
+    text-color:             @fg;
+    cursor:                 pointer;
+}
+
+element selected.normal {
+    background-color:       @bg3;
+}
+
+element-icon {
+    size:                   150px;
+    border-radius:          8px;
+    background-color:       transparent;
+    cursor:                 inherit;
+}
+
+element-text {
+    font:                   "Iosevka Nerd Font 8";
+    horizontal-align:       0.5;
+    background-color:       transparent;
+    text-color:             inherit;
+    cursor:                 inherit;
+}

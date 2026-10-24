@@ -1,0 +1,11 @@
+/* Neutral fallback - regenerated from the wallpaper by theme-colors.py */
+
+* {
+  al:    #00000000;
+  bg:    #15171CFF;
+  bg1:   #26303DFF;
+  bg2:   #2F3B4BFF;
+  bg3:   #3A485BFF;
+  fg:    #F2F2F2FF;
+  ac:    #8FB8DEFF;
+}
