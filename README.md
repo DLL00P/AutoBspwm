@@ -40,7 +40,7 @@ Separate rounded islands that take their colours from the wallpaper:
 | Kali dragon launcher (click: apps, right-click: wallpaper picker) · date and time · LAN IP · VPN IP (`tun*`) | Workspaces: a bug marks the active one, dots the rest (filled = has windows) | Target (`settarget <IP> [NAME]`, `cleartarget`) · wallpaper (click: random, middle: picker, right: pin) · volume · power menu |
 
 ## Wallpapers and adaptive colours
-There is no fixed wallpaper or fixed purple theme. On every login a random wallpaper is picked from `~/Wallpapers`, and the colours of **polybar, rofi, kitty, the Powerlevel10k prompt and the bspwm borders** are generated from it (open terminals pick up the new prompt colours on the next prompt) with [pywal](https://github.com/eylles/pywal16).
+On every login a random wallpaper is picked from `~/Wallpapers`, and the colours of **polybar, rofi, kitty, the Powerlevel10k prompt and the bspwm borders** are generated from it (open terminals pick up the new prompt colours on the next prompt) with [pywal](https://github.com/eylles/pywal16).
 
 - `config/bspwm/scripts/wallpaper.sh` sets the wallpaper and recolours everything (`--random`, `--next`, `--prev`, `--pick`, `--set FILE`, `--cycle MIN`, `--pin`).
   
